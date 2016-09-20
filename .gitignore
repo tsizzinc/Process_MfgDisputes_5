@@ -1,0 +1,1680 @@
+************************************************************;
+************************************************************;
+* Process_MfgDisputes_5.sas                       09/20/2016;
+*                                                           ;
+* step-2: process disputes from manufacturers and/or POD    ;
+************************************************************;
+************************************************************;
+
+* using NewSubs tables produced by Chk_MfgDisputes_5.sas ;
+
+* 20160920: adding 20160915 disputes to re-fixed DT4POD_20160908_All_20160914 ;
+* - added CN_Line_No (after CP_Line_No)                           ;
+* - replaced CP_File_Name (with .cp) with UD_File_Name (no .cp)   ;
+
+* 20160919: deleted from processing:                         ;
+* - Pkg_Size_After_Adjustment--Unit_Refund_After_Adjustment  ;
+* - Pkg_Size_Used_by_MFG--Unit_Refund_Used_by_MFG            ;
+* 20160919: added CN_Line_No (after CP_Line_No)              ;
+* 20160919: replaced CP_File_Name with UD_File_Name          ;
+* 20160919: jumped from Process_MfgDisputes_4.sas to Process_MfgDisputes_5.sas ;
+
+* 20160914: fixed typo (T_Rejected -> T-Rejected) ;
+* 20160913: applied one-time fix to Dispute_Status of DHA-Initiated Disputes ;
+* 20160913: modified post-20160825 summary tables/reports to handle DHA-Initiated Disputes ;
+* 20160913: modified code to identify pricing disputes using POD_Working_Field LIKE 'XPD%' ;
+* 20160826: added PBM_Auth_No (RPC_Auth_No on ROC tables) ;
+
+* 20160825: added new summary tables/reports that:  ; 
+* - separating pricing disputes vs. other disputes  ;
+* - separating tentative ("Pending Accepted/Rejected") vs. final resolution statues ;
+* - added 'Upcoming_Records' for disputes with bad/unmatched claim numbers to be fixed by mfr ;
+
+* 20160811: added one-time fixes to supply/correct missing/bad data ;
+* 20160721: added DC_for_POD_Summ3 ;
+* 20160718: modified code to use Pre-Existing (vs. Raw_PreExisting) disputes ;
+* 20160713: fixed a silly error ;
+* 20160712: added section to export summary data ;
+* 20160712: added/modified code to assign spcl value to DR_Labeler_ID when necessary  ;
+* 20160712: exclude if no or bad matches and exclude pre-existing disputes ;
+
+%LET Proc_DT=20160915;
+
+*OPTIONS MLOGIC MPRINT SYMBOLGEN;
+
+* INCLUDE ALL BQs ;
+%LET Min_BQ=08Q1;
+
+OPTIONS ERRORS=20;
+
+%LET DT_ASOF=&Proc_DT;
+
+%LET DT_ASOF_Last=20160908;
+%LET POD_DT=20160914;
+%LET DT_for_POD_Last=Disputes.DT4POD_&DT_ASOF_Last._All_&POD_DT; 
+
+* DRI: dispute record id ;
+%LET DRI=BQ_RowNo;
+%LET DRI_Last=&DRI;
+%PUT DRI=&DRI DRI_Last=&DRI_Last;
+
+TITLE "Claim-Level Disputes Submitted by Manufacturers - Step-2 - Process Date: &Proc_DT";
+FOOTNOTE "Process_MfgDisputes_5.sas";
+
+************************************************************;
+
+%LET NewSub_Path=&HomePath.MARR_1\Disputes\Mfg-Submitted Disputes\;
+*%LET NewSub_Path=&CRM_Path.Disputes\Mfg-Submitted Disputes\;
+
+LIBNAME NewSub   "&NewSub_Path";
+
+/*
+%LET PRP_PATH=\\a1ssi11630\org\TMA-Aurora\RM Shared\RMF\Pharmacy Refund Program\;
+%LET CRM_Path=\\a1ssi11630\org\TMA-Aurora\RM Shared\RMF\Pharmacy Refund Program\BEA_DROP_FILES_ONLY\;
+*/
+
+LIBNAME Disputes "&HomePath.MARR_1\Disputes\";
+LIBNAME LIBRARY  "&HomePath.MARR_1\Disputes\";
+
+*LIBNAME Disputes "&CRM_Path.Disputes\";
+*LIBNAME LIBRARY  "&CRM_Path.Disputes\";
+
+* output ;
+%LET DC_for_POD_Summary=Disputes.DT_Summary_&DT_ASOF._&POD_DT;
+%LET DC_for_POD_Summ2=Disputes.DT_Summ2_&DT_ASOF._&POD_DT;
+%LET DC_for_POD_Summ3=Disputes.DT_Summ3_&DT_ASOF._&POD_DT;
+%LET DC_for_POD_Summ4=Disputes.DT_Summ4_&DT_ASOF._&POD_DT;
+%LET DC_for_POD_Summ5=Disputes.DT_Summ5_&DT_ASOF._&POD_DT;
+%LET DC_for_POD_Summ6=Disputes.DT_Summ6_&DT_ASOF._&POD_DT;
+
+%LET DT_Pending=Disputes.Pending_&DT_ASOF._All_&POD_DT; 
+%LET DT_for_POD=Disputes.DT4POD_&DT_ASOF._All_&POD_DT;
+
+%LET DT_CP_New=Disputes.DT_CP_&DT_ASOF._New;
+%LET DT_CP_PDTS_New=Disputes.DT_CP_PDTS_&DT_ASOF._New;
+%LET DT_for_POD_New=Disputes.DT_for_POD_&DT_ASOF._New; 
+
+%LET DT_Raw_New=Disputes.DT_Raw_&DT_ASOF._New;
+
+* input ;
+%LET NewSubs=NewSub.NewSubs_&Proc_DT;
+%LET NewSubs_PreExisting=NewSub.NewSubs_PreX_&Proc_DT;
+%LET NewSubs_Raw_PreExisting=NewSub.NewSubs_Raw_PreX_&Proc_DT;
+
+************************************************************;
+
+*%LET Out_XLS_Path=&CRM_Path.Disputes\;
+%LET Out_XLS_Path=&HomePath.MARR_1\Disputes\;
+%LET Out_XLS_File3=&Out_XLS_Path.DT_Summary_&DT_ASOF._&POD_DT..xlsx;
+
+************************************************************;
+* INClude macros ;
+
+*%INC "&CRM_Path.Disputes\Disputes_Macros_1.sas";
+%INC "&HomePath.MARR_1\Disputes\Disputes_Macros_1.sas";
+
+************************************************************;
+
+LIBNAME MARR_1 "&CRM_Path.Patrick Work\SAS_UNIX\MARR_1";
+
+%LET Pharmacy_ASOF=20160815;
+%LET Pharmacy=MARR_1.Pharmacy_&Pharmacy_ASOF; 
+
+************************************************************;
+
+LIBNAME RPC "&CRM_Path.Patrick Work\SAS_UNIX\RPC\";
+
+OPTIONS FMTSEARCH=(Disputes RPC MARR_1);
+
+%LET Labeler_List_All=MARR_1.Labeler_List_All;
+
+%LET BC_TableName=RPC.New_Billed_Claim;  * NOTE: _&Qtr._&RD to be appended ;
+
+%LET PDTS_TableName=RPC.PDTS;            * NOTE: _&YYYYMM._&PDTS_ASOF to be appended ;
+%LET XRef_TableName=RPC.XRef;            * NOTE: _&YYYYMM._&PDTS_ASOF to be appended ;
+%LET TED_TableName=RPC.TED_Net2;         * NOTE: _&YYYYMM to be appended ;
+
+%LET PDTS_ASOF=20141119;
+%LET UM_CP_Paid_Rev=RPC.UM_CP_Paid_Rev_&PDTS_ASOF;
+
+************************************************************;
+************************************************************;
+* check SAS version:                                                 ;
+
+* if W64 then:                                                       ;
+* - check whether export workbook exists and to                      ;
+* - assign DBMS=XLSX or DBMS=EXCELCS accordingly                     ;
+
+* when creating a workbook which did not previously exist:           ;
+* - DBMS=EXCELCS creates a new workbook that CANNOT be opened!!!     ;
+* - DBMS=XLSX creates a new workbook that CAN be opened!!!           ;
+
+* when updating/replacing an existing sheet in an existing workbook: ;
+* - DBMS=EXCELCS preserves previous formatting                       ;
+* - DBMS=XLSX loses all previous formatting!!!                       ;
+
+%MACRO Set_DBMS_EXCEL(XLS);
+
+%GLOBAL DBMS_EXCEL;
+
+%PUT ************************************************** ;
+%PUT Running under &SYSSCPL.... ;
+
+%IF
+   &SYSSCPL = W32_7PRO
+%THEN
+%DO;
+
+%PUT Setting DBMS_EXCEL=EXCEL... ;
+%LET DBMS_EXCEL=EXCEL;
+
+%END;
+%ELSE
+%IF
+   %SYSFUNC(FILEEXIST(&XLS)) 
+%THEN
+%DO;
+
+%PUT "&XLS" exists. ;
+%PUT Setting DBMS_EXCEL=EXCELCS. ;
+%LET DBMS_EXCEL=EXCELCS;
+
+%END;
+%ELSE
+%DO;
+
+%PUT "&XLS" does not exist. ;
+%PUT Setting DBMS_EXCEL=XLSX. ;
+%LET DBMS_EXCEL=XLSX;
+
+%END;
+
+%PUT ************************************************** ;
+
+%MEND Set_DBMS_EXCEL;
+
+************************************************************;
+
+%MACRO Export2XLS(SAS_Table_Name, Excel_File_Name, Excel_Sheet_Name);
+
+PROC EXPORT DATA=&SAS_Table_Name
+   OUTFILE="&Excel_File_Name"
+   DBMS=&DBMS_EXCEL REPLACE;
+   SHEET="&Excel_Sheet_Name";
+RUN;
+
+%MEND Export2XLS;
+
+************************************************************;
+************************************************************;
+* from 20160712 version of Chk_MfgDisputes_1.sas: ;
+* match by first 14 bytes of claim number ;
+* set match = '-' if no matches found ;
+* set match = 'P' if claim number not matching exactly ;
+* set match = 'L' if Labeler_ID not matching ;
+* set match = 'Q' if Bill_Qtr not matching ;
+* set match = 'N' if cp data not matching manufacturer-submitted data ;
+* set match = 'Y' if matches found with no issues ;
+
+* exclude if no or bad matches ;
+
+PROC SORT DATA=&NewSubs OUT=NewSubs;
+   BY Claim_Number &DRI;
+   WHERE Match NOT IN ('-', 'N');
+RUN;
+
+* exclude pre-existing disputes ;
+
+PROC SQL STIMER;
+CREATE TABLE NewSubs AS
+SELECT
+   *
+FROM
+   NewSubs
+HAVING
+   Claim_Number || Dispute_Code NOT IN
+      (
+      SELECT
+         Claim_Number || Dispute_Code
+      FROM
+         &NewSubs_PreExisting
+      )
+ORDER BY
+   Claim_Number,
+   &DRI
+;
+QUIT;
+
+DATA
+   &DT_Raw_New
+      (
+      KEEP=
+         Claim_Number--O_Auth_No &DRI
+         DHA_Receive_DT HCDA_Receive_DT HCDA_Process_DT
+         CN_Line_No
+      SORTEDBY=Claim_Number &DRI
+      INDEX=(Bill_Qtr)
+      )
+   ;
+
+   LENGTH
+      Claim_Number                $ 20
+      Dispute_Code                $ 10
+      Dispute_Comment             $ 500
+      DR_Labeler_ID               $ 6
+      Bill_Qtr                    $ 4
+      Submit_Dt                   $ 20 
+      Dispute_Status              $ 20
+
+      Decision_Date               $ 20
+      DisputeDecisionStaff        $ 30
+
+      Qty_After_Adjustment
+      Qty_Used_by_MFG
+      8
+
+      DisputeJustify              $ 500
+      POD_Working_Field           $ 500
+      POD_Note                    $ 500
+      Date_of_Service             $ 8
+      Program                     $ 4
+      Util_Qtr                    $ 4
+      NDC                         $ 11
+      Product_Description         $ 30
+      O_Auth_No                   $ 20
+      ;
+
+   SET NewSubs
+         (
+         RENAME=
+            (
+            CP_NDC = NDC
+            CP_Product_Description = Product_Description
+            CP_Date_of_Service = Date_of_Service
+            CP_Qty = Quantity
+            )
+         )
+         ;
+
+   * assign special value to DR_Labeler_ID if necessary ;
+   IF
+      MS_Labeler_ID = 'C00024'
+      AND
+      Labeler_ID = 'A00955'
+   THEN
+      DR_Labeler_ID = 'A00955';
+   ELSE
+      DR_Labeler_ID = Labeler_ID;
+
+   ARRAY CHAR _CHAR_;
+   DO OVER CHAR; IF CHAR = ' ' THEN CHAR = ' '; END;
+
+   ARRAY NUM _NUMERIC_;
+   DO OVER NUM; IF NUM = . THEN NUM = .; END;
+
+   Program = SUBSTR(UD_File_Name, 17, 3);
+   Util_Qtr = SUBSTR(UD_File_Name, 22, 4);
+
+   IF 
+      Quantity > 0
+   THEN
+      O_Auth_No = Claim_Number;
+RUN;
+
+************************************************************;
+************************************************************;
+* get claim information from CP, PDTS, and other tables     ;  
+
+%Attach_ClmInfo_1(&DT_Raw_New, &DT_CP_New, &DT_CP_PDTS_New, &DT_for_POD_New);
+
+************************************************************;
+************************************************************;
+
+DATA &DT_for_POD
+      (
+      SORTEDBY=Claim_Number &DRI 
+      KEEP=
+         Dispute_Status--Amt_Paid
+         Claim_Dispute_Status Base
+         DB_Upd_Date TRRT_File_Date
+         DHA_Receive_DT HCDA_Receive_DT HCDA_Process_DT
+         PBM_Auth_No
+      );
+   MERGE
+      &DT_for_POD_Last
+      &DT_for_POD_New
+      &DT_Raw_New
+         (
+         KEEP=
+            Claim_Number &DRI
+            DR_Labeler_ID
+            DHA_Receive_DT HCDA_Receive_DT HCDA_Process_DT
+            CN_Line_No
+         )
+      ;
+   BY Claim_Number &DRI;
+
+   /*
+   * 20160919: one-time fix ;
+   IF
+      HCDA_Process_DT = '20160915'
+   THEN
+      TRRT_File_Date = '20160914';
+   */
+
+   /*
+   * 20160913: one-time fix for DHA-Initiated Disputes ;
+   IF
+      POD_Working_Field IN ('XKA')
+   THEN
+      Dispute_Status = 'DHA-Initiated';
+
+   * one-time fix ;
+   IF
+      (
+      (
+      Bill_Qtr = '15Q3'
+      AND
+      Dispense_Qtr < '13Q3'
+      )
+      OR
+      (
+      Bill_Qtr = '16Q1'
+      AND
+      Dispense_Qtr < '14Q1'
+      )
+      )
+      AND
+      Product_ID = ' '
+   THEN
+      DO;
+         Product_ID = 'Not Billed';
+         Brand_Name = 'Not Billed';
+      END;
+   */
+
+   /*
+   * one-time fix ;
+   IF
+      SUBSTR(&DRI, 8, 1) = 'A'
+      AND
+      DHA_Receive_DT = ' '
+      AND
+      DR_Labeler_ID = 'A50242'
+   THEN
+      DO;
+         IF
+            Labeler_ID = 'A00004'
+         THEN
+            DR_Labeler_ID = Labeler_ID;
+
+         DHA_Receive_DT = '20160610';
+         HCDA_Receive_DT = '20160615';
+         HCDA_Process_DT = '20160623';
+      END;
+   ELSE
+   IF
+      SUBSTR(&DRI, 8, 1) = 'A'
+      AND
+      DHA_Receive_DT = ' '
+      AND
+      DR_Labeler_ID = 'A59572'
+   THEN
+      DO;
+         DHA_Receive_DT = '?';
+         HCDA_Receive_DT = '20160617';
+         HCDA_Process_DT = '20160623';
+      END;
+   ELSE
+   IF
+      SUBSTR(&DRI, 8, 1) = 'C'
+      AND
+      Submit_DT = ' '
+   THEN
+      DO;
+         IF
+            Labeler_ID = 'A00002'
+         THEN
+            Submit_DT = '20150702';
+         ELSE
+         IF
+            Labeler_ID = 'A00006'
+         THEN
+            Submit_DT = '20150812';
+         ELSE
+         IF
+            Labeler_ID = 'A00065'
+         THEN
+            Submit_DT = '20160216';
+         ELSE
+         IF
+            Labeler_ID = 'A49702'
+         THEN
+            Submit_DT = '20160330';
+         ELSE
+         IF
+            Labeler_ID = 'A50242'
+         THEN
+            Submit_DT = '20151209';
+         ELSE
+         IF
+            Labeler_ID = 'A59762'
+         THEN
+            Submit_DT = '20160119';
+         ELSE
+         IF
+            Labeler_ID IN ('B00093', 'A00555')
+         THEN
+            Submit_DT = '20160223';
+         ELSE
+         IF
+            Labeler_ID = 'C00173'
+         THEN
+            Submit_DT = '20160330';
+
+         DHA_Receive_DT = Submit_DT;
+      END;
+   */
+RUN;
+
+PROC SQL;
+CREATE UNIQUE INDEX Clm_DRI ON &DT_for_POD (Claim_Number, &DRI);
+CREATE INDEX QL ON &DT_for_POD (Bill_Qtr, Labeler_ID);
+CREATE INDEX Dispute_Status ON &DT_for_POD;
+CREATE INDEX HCDA_Process_DT ON &DT_for_POD;
+CREATE INDEX CNFL ON &DT_for_POD (UD_File_Name, CN_Line_No);
+QUIT;
+
+************************************************************;
+************************************************************;
+* all Pending ;
+
+PROC SQL STIMER;
+CREATE TABLE &DT_Pending AS
+SELECT
+   *
+FROM
+   &DT_for_POD
+WHERE
+   Dispute_Status NOT IN ('Accepted', 'Pending-Accepted', 'Rejected', 'Pending-Rejected')
+ORDER BY
+   Claim_Number,
+   &DRI
+;
+QUIT;
+
+PROC SQL;
+CREATE INDEX Clm_DRI ON &DT_Pending (Claim_Number, &DRI);
+CREATE INDEX QL ON &DT_Pending (Bill_Qtr, Labeler_ID);
+CREATE INDEX TRRT_File_Date ON &DT_Pending;
+CREATE INDEX HCDA_Process_DT ON &DT_Pending;
+QUIT;
+
+************************************************************;
+* export to Excel ;
+
+%MACRO Export_Pending(Qtr);
+
+DATA Pending;
+   SET &DT_Pending(WHERE=(Bill_Qtr="&Qtr"));
+RUN;
+
+%Set_DBMS_EXCEL(&CRM_Path.Disputes\Pending_&Qtr._&Proc_DT..xlsx);
+
+%Export2XLS(Pending, &CRM_Path.Disputes\Pending_&Qtr._&Proc_DT..xlsx, &Qtr);
+
+%MEND Export_Pending;
+
+/*
+%Export_Pending(09Q3);
+%Export_Pending(09Q4);
+%Export_Pending(10Q1);
+%Export_Pending(10Q2);
+%Export_Pending(10Q3);
+%Export_Pending(10Q4);
+%Export_Pending(11Q1);
+%Export_Pending(11Q2);
+%Export_Pending(11Q3);
+%Export_Pending(11Q4);
+%Export_Pending(12Q1);
+%Export_Pending(12Q2);
+%Export_Pending(12Q3);
+%Export_Pending(12Q4);
+%Export_Pending(13Q1);
+%Export_Pending(13Q2);
+%Export_Pending(13Q3);
+%Export_Pending(13Q4);
+%Export_Pending(14Q1);
+%Export_Pending(14Q2);
+%Export_Pending(14Q3);
+*/
+
+/*
+* all ;
+
+DATA Pending;
+   SET &DT_Pending;
+RUN;
+
+%Set_DBMS_EXCEL(&CRM_Path.Disputes\Pending_&Proc_DT..xlsx);
+
+%Export2XLS(Pending, &CRM_Path.Disputes\Pending_&Proc_DT..xlsx, All);
+*/
+
+************************************************************;
+* new Mfg-Submitted only ;
+
+DATA MS_Pending;
+   SET &DT_Pending(WHERE=(HCDA_Process_DT="&Proc_DT"));;
+RUN;
+
+%Set_DBMS_EXCEL(&CRM_Path.Disputes\Pending_Mfg-Submitted_&Proc_DT..xlsx);
+
+%Export2XLS(MS_Pending, &CRM_Path.Disputes\Pending_Mfg-Submitted_&Proc_DT..xlsx, MS_All);
+
+************************************************************;
+************************************************************;
+* summary for all ;
+
+PROC SQL STIMER;
+CREATE TABLE DC_for_POD_Summ1 AS
+SELECT
+   DR_Labeler_ID AS Labeler,
+   Product_ID AS NDC,
+   Bill_Qtr,
+   CASE
+      WHEN
+         Dispute_Status IN
+            (
+            ' ',
+            'Pending',
+            'No Status',
+            'Pending-Upload'
+            )
+      THEN
+         'Pending'
+      WHEN
+         Dispute_Status IN
+            (
+            'DHA-Initiated',
+            'To be Accepted',
+            )
+      THEN
+         'DHA-Initiated'
+      ELSE
+         Dispute_Status
+   END AS Dispute_Status,
+   COUNT(Claim_Number) AS Records_Cnt FORMAT=COMMA9.0,
+   SUM(COALESCE(Est_Refund, CP_Amt_Refund)) AS Est_Refund FORMAT=DOLLAR15.0
+FROM
+   &DT_for_POD
+WHERE
+   Dispute_Status IN
+      (
+      ' ',
+      'Pending',
+      'No Status',
+      'DHA-Initiated',
+      'Pending-Upload'
+      )
+GROUP BY
+   1,2,3,4
+ORDER BY
+   1,2,3,4
+;
+QUIT;
+
+PROC SQL STIMER;
+CREATE TABLE DC_for_POD_Summ2 AS
+SELECT
+   DR_Labeler_ID AS Labeler,
+   Product_ID AS NDC,
+   Bill_Qtr,
+   CASE
+      WHEN
+         POD_Working_Field LIKE 'XPD%'
+      THEN
+         'PricingDispute'
+      WHEN
+         Dispute_Status IN
+            (
+            'Pending-Rejected',
+            )
+      THEN
+         'T-Rejected'
+      WHEN
+         Dispute_Status IN
+            (
+            'Pending-Accepted',
+            )
+      THEN
+         'T-Accepted'
+      ELSE
+         Dispute_Status
+   END AS Dispute_Status,
+   COUNT(Claim_Number) AS Records_Cnt FORMAT=COMMA9.0,
+   SUM(COALESCE(Est_Refund, CP_Amt_Refund)) AS Est_Refund FORMAT=DOLLAR15.0
+FROM
+   &DT_for_POD
+WHERE
+   Dispute_Status NOT IN
+      (
+      ' ',
+      'Pending',
+      'No Status',
+      'DHA-Initiated',
+      'Pending-Upload'
+      )
+GROUP BY
+   1,2,3,4
+ORDER BY
+   1,2,3,4
+;
+QUIT;
+
+PROC SQL STIMER;
+CREATE TABLE &DC_for_POD_Summary AS
+SELECT
+   A.Labeler,
+   B.Manufacturer AS Company,
+   A.NDC,
+   A.Bill_Qtr,
+   A.Dispute_Status,
+   A.Records_Cnt,
+   A.Est_Refund
+FROM
+   (
+   SELECT
+      *
+   FROM
+      DC_for_POD_Summ1
+   UNION ALL
+   SELECT
+      *
+   FROM
+      DC_for_POD_Summ2
+   ) A
+   LEFT JOIN
+   &Labeler_List_All B
+ON
+   A.Labeler = B.Labeler_ID
+ORDER BY
+   1,3,4,5
+;
+QUIT;
+
+************************************************************;
+************************************************************;
+* export to Excel ;
+
+%Set_DBMS_EXCEL(&Out_XLS_File3);
+
+%Export2XLS(&DC_for_POD_Summary, &Out_XLS_File3, Data_for_POD);
+
+************************************************************;
+************************************************************;
+* pre-20160825 summary ;
+
+PROC SQL STIMER;
+CREATE TABLE DC_for_POD_Summ3 AS
+SELECT
+   DR_Labeler_ID AS Labeler,
+   Product_ID AS NDC,
+   Bill_Qtr,
+   Refund_Program AS Program,
+   CASE
+      WHEN
+         Dispute_Status IN
+            (
+            ' ',
+            'Pending',
+            'No Status',
+            'Pending-Upload'
+            )
+      THEN
+         'Pending'
+      WHEN
+         Dispute_Status IN
+            (
+            'DHA-Initiated',
+            'To be Accepted',
+            )
+      THEN
+         'DHA-Initiated'
+      ELSE
+         Dispute_Status
+   END AS Dispute_Status,
+   COUNT(Claim_Number) AS Records_Cnt FORMAT=COMMA9.0,
+   SUM(COALESCE(Est_Refund, CP_Amt_Refund)) AS Est_Refund FORMAT=DOLLAR15.0
+FROM
+   &DT_for_POD
+WHERE
+   Dispute_Status IN
+      (
+      ' ',
+      'Pending',
+      'No Status',
+      'DHA-Initiated',
+      'Pending-Upload'
+      )
+GROUP BY
+   1,2,3,4,5
+ORDER BY
+   1,2,3,4,5
+;
+QUIT;
+
+PROC SQL STIMER;
+CREATE TABLE DC_for_POD_Summ4 AS
+SELECT
+   DR_Labeler_ID AS Labeler,
+   Product_ID AS NDC,
+   Bill_Qtr,
+   Refund_Program AS Program,
+   CASE
+      WHEN
+         Dispute_Status IN
+            (
+            'Pending-Rejected',
+            'Rejected'
+            )
+      THEN
+         'Rejected'
+      WHEN
+         Dispute_Status IN
+            (
+            'Pending-Accepted',
+            'Accepted'
+            )
+      THEN
+         'Accepted'
+      ELSE
+         Dispute_Status
+   END AS Dispute_Status,
+   COUNT(Claim_Number) AS Records_Cnt FORMAT=COMMA9.0,
+   SUM(COALESCE(Est_Refund, CP_Amt_Refund)) AS Est_Refund FORMAT=DOLLAR15.0
+FROM
+   &DT_for_POD
+WHERE
+   Dispute_Status NOT IN
+      (
+      ' ',
+      'Pending',
+      'No Status',
+      'DHA-Initiated',
+      'Pending-Upload'
+      )
+GROUP BY
+   1,2,3,4,5
+ORDER BY
+   1,2,3,4,5
+;
+QUIT;
+
+PROC SQL STIMER;
+CREATE TABLE &DC_for_POD_Summ2 AS
+SELECT
+   A.Labeler,
+   B.Manufacturer AS Company,
+   A.NDC,
+   A.Bill_Qtr,
+   A.Program,
+   CASE
+      WHEN
+         A.Dispute_Status = 'Accepted'
+      THEN
+         A.Records_Cnt
+      ELSE
+         0
+   END AS Accepted_Records,
+   CASE
+      WHEN
+         A.Dispute_Status = 'Rejected'
+      THEN
+         A.Records_Cnt
+      ELSE
+         0
+   END AS Rejected_Records,
+   CASE
+      WHEN
+         A.Dispute_Status = 'Pending'
+      THEN
+         A.Records_Cnt
+      ELSE
+         0
+   END AS Pending_Records,
+   CASE
+      WHEN
+         A.Dispute_Status = 'Accepted'
+      THEN
+         A.Est_Refund
+      ELSE
+         0
+   END AS Accepted_Est_Refund,
+   CASE
+      WHEN
+         A.Dispute_Status = 'Rejected'
+      THEN
+         A.Est_Refund
+      ELSE
+         0
+   END AS Rejected_Est_Refund,
+   CASE
+      WHEN
+         A.Dispute_Status = 'Pending'
+      THEN
+         A.Est_Refund
+      ELSE
+         0
+   END AS Pending_Est_Refund
+   ,
+   CASE
+      WHEN
+         A.Dispute_Status = 'DHA-Initiated'
+      THEN
+         A.Records_Cnt
+      ELSE
+         0
+   END AS DID_Records,
+   CASE
+      WHEN
+         A.Dispute_Status = 'DHA-Initiated'
+      THEN
+         A.Est_Refund
+      ELSE
+         0
+   END AS DID_Est_Refund
+FROM
+   (
+   SELECT
+      *
+   FROM
+      DC_for_POD_Summ3
+   UNION ALL
+   SELECT
+      *
+   FROM
+      DC_for_POD_Summ4
+   ) A
+   LEFT JOIN
+   &Labeler_List_All B
+ON
+   A.Labeler = B.Labeler_ID
+ORDER BY
+   1,3,4,5
+;
+QUIT;
+
+************************************************************;
+* export to Excel ;
+
+%Export2XLS(&DC_for_POD_Summ2, &Out_XLS_File3, Data_for_POD_2);
+
+************************************************************;
+************************************************************;
+* pre-20160825 summary ;
+
+PROC SQL STIMER;
+CREATE TABLE DC4POD_Summ3a AS
+SELECT
+   Dispute_Code,
+   Bill_Qtr,
+   DR_Labeler_ID AS Labeler,
+   CASE
+      WHEN
+         Dispute_Status IN
+            (
+            ' ',
+            'Pending',
+            'No Status',
+            'Pending-Upload'
+            )
+      THEN
+         'Pending'
+      WHEN
+         Dispute_Status IN
+            (
+            'DHA-Initiated',
+            'To be Accepted',
+            )
+      THEN
+         'DHA-Initiated'
+      ELSE
+         Dispute_Status
+   END AS Dispute_Status,
+   COUNT(Claim_Number) AS Records_Cnt FORMAT=COMMA9.0,
+   SUM(COALESCE(Est_Refund, CP_Amt_Refund)) AS Est_Refund FORMAT=DOLLAR15.0
+FROM
+   &DT_for_POD
+WHERE
+   Dispute_Status IN
+      (
+      ' ',
+      'Pending',
+      'No Status',
+      'DHA-Initiated',
+      'Pending-Upload'
+      )
+GROUP BY
+   1,2,3,4
+ORDER BY
+   1,2,3,4
+;
+QUIT;
+
+PROC SQL STIMER;
+CREATE TABLE DC4POD_Summ3b AS
+SELECT
+   Dispute_Code,
+   Bill_Qtr,
+   DR_Labeler_ID AS Labeler,
+   CASE
+      WHEN
+         Dispute_Status IN
+            (
+            'Pending-Rejected',
+            'Rejected'
+            )
+      THEN
+         'Rejected'
+      WHEN
+         Dispute_Status IN
+            (
+            'Pending-Accepted',
+            'Accepted'
+            )
+      THEN
+         'Accepted'
+      ELSE
+         Dispute_Status
+   END AS Dispute_Status,
+   COUNT(Claim_Number) AS Records_Cnt FORMAT=COMMA9.0,
+   SUM(COALESCE(Est_Refund, CP_Amt_Refund)) AS Est_Refund FORMAT=DOLLAR15.0
+FROM
+   &DT_for_POD
+WHERE
+   Dispute_Status NOT IN
+      (
+      ' ',
+      'Pending',
+      'No Status',
+      'DHA-Initiated',
+      'Pending-Upload'
+      )
+GROUP BY
+   1,2,3,4
+ORDER BY
+   1,2,3,4
+;
+QUIT;
+
+PROC SQL STIMER;
+CREATE TABLE &DC_for_POD_Summ3 AS
+SELECT
+   A.Dispute_Code,
+   A.Bill_Qtr,
+   A.Labeler,
+   B.Manufacturer AS Company,
+   CASE
+      WHEN
+         A.Dispute_Status = 'Accepted'
+      THEN
+         A.Records_Cnt
+      ELSE
+         0
+   END AS Accepted_Records,
+   CASE
+      WHEN
+         A.Dispute_Status = 'Rejected'
+      THEN
+         A.Records_Cnt
+      ELSE
+         0
+   END AS Rejected_Records,
+   CASE
+      WHEN
+         A.Dispute_Status = 'Pending'
+      THEN
+         A.Records_Cnt
+      ELSE
+         0
+   END AS Pending_Records,
+   CASE
+      WHEN
+         A.Dispute_Status = 'Accepted'
+      THEN
+         A.Est_Refund
+      ELSE
+         0
+   END AS Accepted_Est_Refund,
+   CASE
+      WHEN
+         A.Dispute_Status = 'Rejected'
+      THEN
+         A.Est_Refund
+      ELSE
+         0
+   END AS Rejected_Est_Refund,
+   CASE
+      WHEN
+         A.Dispute_Status = 'Pending'
+      THEN
+         A.Est_Refund
+      ELSE
+         0
+   END AS Pending_Est_Refund
+   ,
+   CASE
+      WHEN
+         A.Dispute_Status = 'DHA-Initiated'
+      THEN
+         A.Records_Cnt
+      ELSE
+         0
+   END AS DID_Records,
+   CASE
+      WHEN
+         A.Dispute_Status = 'DHA-Initiated'
+      THEN
+         A.Est_Refund
+      ELSE
+         0
+   END AS DID_Est_Refund
+FROM
+   (
+   SELECT
+      *
+   FROM
+      DC4POD_Summ3a
+   UNION ALL
+   SELECT
+      *
+   FROM
+      DC4POD_Summ3b
+   ) A
+   LEFT JOIN
+   &Labeler_List_All B
+ON
+   A.Labeler = B.Labeler_ID
+ORDER BY
+   1,2,3
+;
+QUIT;
+
+************************************************************;
+* export to Excel ;
+
+%Export2XLS(&DC_for_POD_Summ3, &Out_XLS_File3, Data_for_POD_3);
+
+************************************************************;
+************************************************************;
+* 20160825: new summary ;
+
+PROC SQL STIMER;
+CREATE TABLE DC_for_POD_Summ3 AS
+SELECT
+   DR_Labeler_ID AS Labeler,
+   Product_ID AS NDC,
+   Bill_Qtr,
+   Refund_Program AS Program,
+   CASE
+      WHEN
+         Dispute_Status IN
+            (
+            ' ',
+            'Pending',
+            'No Status',
+            'Pending-Upload'
+            )
+      THEN
+         'Pending'
+      WHEN
+         Dispute_Status IN
+            (
+            'DHA-Initiated',
+            'To be Accepted',
+            )
+      THEN
+         'DHA-Initiated'
+      ELSE
+         Dispute_Status
+   END AS Dispute_Status,
+   COUNT(Claim_Number) AS Records_Cnt FORMAT=COMMA9.0,
+   SUM(COALESCE(Est_Refund, CP_Amt_Refund)) AS Est_Refund FORMAT=DOLLAR15.0
+FROM
+   &DT_for_POD
+WHERE
+   Dispute_Status IN
+      (
+      ' ',
+      'Pending',
+      'No Status',
+      'DHA-Initiated',
+      'Pending-Upload'
+      )
+GROUP BY
+   1,2,3,4,5
+ORDER BY
+   1,2,3,4,5
+;
+QUIT;
+
+PROC SQL STIMER;
+CREATE TABLE DC_for_POD_Summ4 AS
+SELECT
+   DR_Labeler_ID AS Labeler,
+   Product_ID AS NDC,
+   Bill_Qtr,
+   Refund_Program AS Program,
+   CASE
+      WHEN
+         POD_Working_Field LIKE 'XPD%'
+      THEN
+         'PricingDispute'
+      WHEN
+         Dispute_Status IN
+            (
+            'Pending-Rejected',
+            )
+      THEN
+         'T-Rejected'
+      WHEN
+         Dispute_Status IN
+            (
+            'Pending-Accepted',
+            )
+      THEN
+         'T-Accepted'
+      ELSE
+         Dispute_Status
+   END AS Dispute_Status,
+   COUNT(Claim_Number) AS Records_Cnt FORMAT=COMMA9.0,
+   SUM(COALESCE(Est_Refund, CP_Amt_Refund)) AS Est_Refund FORMAT=DOLLAR15.0
+FROM
+   &DT_for_POD
+WHERE
+   Dispute_Status NOT IN
+      (
+      ' ',
+      'Pending',
+      'No Status',
+      'DHA-Initiated',
+      'Pending-Upload'
+      )
+GROUP BY
+   1,2,3,4,5
+ORDER BY
+   1,2,3,4,5
+;
+QUIT;
+
+PROC SQL STIMER;
+CREATE TABLE &DC_for_POD_Summ4 AS
+SELECT
+   A.Labeler,
+   B.Manufacturer AS Company,
+   A.NDC,
+   A.Bill_Qtr,
+   A.Program,
+
+   0 AS Upcoming_Records,
+
+   CASE
+      WHEN
+         A.Dispute_Status = 'PricingDispute'
+      THEN
+         A.Records_Cnt
+      ELSE
+         0
+   END AS PricingDispute_Records,
+
+   CASE
+      WHEN
+         A.Dispute_Status = 'Accepted'
+      THEN
+         A.Records_Cnt
+      ELSE
+         0
+   END AS Accepted_Records,
+   CASE
+      WHEN
+         A.Dispute_Status = 'Rejected'
+      THEN
+         A.Records_Cnt
+      ELSE
+         0
+   END AS Rejected_Records,
+   CASE
+      WHEN
+         A.Dispute_Status = 'T-Accepted'
+      THEN
+         A.Records_Cnt
+      ELSE
+         0
+   END AS T_Accepted_Records,
+   CASE
+      WHEN
+         A.Dispute_Status = 'T-Rejected'
+      THEN
+         A.Records_Cnt
+      ELSE
+         0
+   END AS T_Rejected_Records,
+   CASE
+      WHEN
+         A.Dispute_Status = 'Pending'
+      THEN
+         A.Records_Cnt
+      ELSE
+         0
+   END AS Pending_Records,
+   CASE
+      WHEN
+         A.Dispute_Status = 'Accepted'
+      THEN
+         A.Est_Refund
+      ELSE
+         0
+   END AS Accepted_Est_Refund,
+   CASE
+      WHEN
+         A.Dispute_Status = 'Rejected'
+      THEN
+         A.Est_Refund
+      ELSE
+         0
+   END AS Rejected_Est_Refund,
+   CASE
+      WHEN
+         A.Dispute_Status = 'T-Accepted'
+      THEN
+         A.Est_Refund
+      ELSE
+         0
+   END AS T_Accepted_Est_Refund,
+   CASE
+      WHEN
+         A.Dispute_Status = 'T-Rejected'
+      THEN
+         A.Est_Refund
+      ELSE
+         0
+   END AS T_Rejected_Est_Refund,
+   CASE
+      WHEN
+         A.Dispute_Status = 'Pending'
+      THEN
+         A.Est_Refund
+      ELSE
+         0
+   END AS Pending_Est_Refund
+   ,
+   CASE
+      WHEN
+         A.Dispute_Status = 'DHA-Initiated'
+      THEN
+         A.Records_Cnt
+      ELSE
+         0
+   END AS DID_Records,
+   CASE
+      WHEN
+         A.Dispute_Status = 'DHA-Initiated'
+      THEN
+         A.Est_Refund
+      ELSE
+         0
+   END AS DID_Est_Refund
+FROM
+   (
+   SELECT
+      *
+   FROM
+      DC_for_POD_Summ3
+   UNION ALL
+   SELECT
+      *
+   FROM
+      DC_for_POD_Summ4
+   ) A
+   LEFT JOIN
+   &Labeler_List_All B
+ON
+   A.Labeler = B.Labeler_ID
+ORDER BY
+   1,3,4,5
+;
+QUIT;
+
+************************************************************;
+* export to Excel ;
+
+%Export2XLS(&DC_for_POD_Summ4, &Out_XLS_File3, Data_for_POD_4);
+
+************************************************************;
+************************************************************;
+* 20160825: new summary ;
+
+PROC SQL STIMER;
+CREATE TABLE DC4POD_Summ3a AS
+SELECT
+   Dispute_Code,
+   Bill_Qtr,
+   DR_Labeler_ID AS Labeler,
+   CASE
+      WHEN
+         Dispute_Status IN
+            (
+            ' ',
+            'Pending',
+            'No Status',
+            'Pending-Upload'
+            )
+      THEN
+         'Pending'
+      WHEN
+         Dispute_Status IN
+            (
+            'DHA-Initiated',
+            'To be Accepted',
+            )
+      THEN
+         'DHA-Initiated'
+      ELSE
+         Dispute_Status
+   END AS Dispute_Status,
+   COUNT(Claim_Number) AS Records_Cnt FORMAT=COMMA9.0,
+   SUM(COALESCE(Est_Refund, CP_Amt_Refund)) AS Est_Refund FORMAT=DOLLAR15.0
+FROM
+   &DT_for_POD
+WHERE
+   Dispute_Status IN
+      (
+      ' ',
+      'Pending',
+      'No Status',
+      'DHA-Initiated',
+      'Pending-Upload'
+      )
+GROUP BY
+   1,2,3,4
+ORDER BY
+   1,2,3,4
+;
+QUIT;
+
+PROC SQL STIMER;
+CREATE TABLE DC4POD_Summ3b AS
+SELECT
+   Dispute_Code,
+   Bill_Qtr,
+   DR_Labeler_ID AS Labeler,
+   CASE
+      WHEN
+         POD_Working_Field LIKE 'XPD%'
+      THEN
+         'PricingDispute'
+      WHEN
+         Dispute_Status IN
+            (
+            'Pending-Rejected',
+            )
+      THEN
+         'T-Rejected'
+      WHEN
+         Dispute_Status IN
+            (
+            'Pending-Accepted',
+            )
+      THEN
+         'T-Accepted'
+      ELSE
+         Dispute_Status
+   END AS Dispute_Status,
+   COUNT(Claim_Number) AS Records_Cnt FORMAT=COMMA9.0,
+   SUM(COALESCE(Est_Refund, CP_Amt_Refund)) AS Est_Refund FORMAT=DOLLAR15.0
+FROM
+   &DT_for_POD
+WHERE
+   Dispute_Status NOT IN
+      (
+      ' ',
+      'Pending',
+      'No Status',
+      'DHA-Initiated',
+      'Pending-Upload'
+      )
+GROUP BY
+   1,2,3,4
+ORDER BY
+   1,2,3,4
+;
+QUIT;
+
+PROC SQL STIMER;
+CREATE TABLE &DC_for_POD_Summ5 AS
+SELECT
+   A.Dispute_Code,
+   A.Bill_Qtr,
+   A.Labeler,
+   B.Manufacturer AS Company,
+
+   0 AS Upcoming_Records,
+
+   CASE
+      WHEN
+         A.Dispute_Status = 'PricingDispute'
+      THEN
+         A.Records_Cnt
+      ELSE
+         0
+   END AS PricingDispute_Records,
+
+   CASE
+      WHEN
+         A.Dispute_Status = 'Accepted'
+      THEN
+         A.Records_Cnt
+      ELSE
+         0
+   END AS Accepted_Records,
+   CASE
+      WHEN
+         A.Dispute_Status = 'Rejected'
+      THEN
+         A.Records_Cnt
+      ELSE
+         0
+   END AS Rejected_Records,
+   CASE
+      WHEN
+         A.Dispute_Status = 'T-Accepted'
+      THEN
+         A.Records_Cnt
+      ELSE
+         0
+   END AS T_Accepted_Records,
+   CASE
+      WHEN
+         A.Dispute_Status = 'T-Rejected'
+      THEN
+         A.Records_Cnt
+      ELSE
+         0
+   END AS T_Rejected_Records,
+   CASE
+      WHEN
+         A.Dispute_Status = 'Pending'
+      THEN
+         A.Records_Cnt
+      ELSE
+         0
+   END AS Pending_Records,
+   CASE
+      WHEN
+         A.Dispute_Status = 'Accepted'
+      THEN
+         A.Est_Refund
+      ELSE
+         0
+   END AS Accepted_Est_Refund,
+   CASE
+      WHEN
+         A.Dispute_Status = 'Rejected'
+      THEN
+         A.Est_Refund
+      ELSE
+         0
+   END AS Rejected_Est_Refund,
+   CASE
+      WHEN
+         A.Dispute_Status = 'T-Accepted'
+      THEN
+         A.Est_Refund
+      ELSE
+         0
+   END AS T_Accepted_Est_Refund,
+   CASE
+      WHEN
+         A.Dispute_Status = 'T-Rejected'
+      THEN
+         A.Est_Refund
+      ELSE
+         0
+   END AS T_Rejected_Est_Refund,
+   CASE
+      WHEN
+         A.Dispute_Status = 'Pending'
+      THEN
+         A.Est_Refund
+      ELSE
+         0
+   END AS Pending_Est_Refund
+   ,
+   CASE
+      WHEN
+         A.Dispute_Status = 'DHA-Initiated'
+      THEN
+         A.Records_Cnt
+      ELSE
+         0
+   END AS DID_Records,
+   CASE
+      WHEN
+         A.Dispute_Status = 'DHA-Initiated'
+      THEN
+         A.Est_Refund
+      ELSE
+         0
+   END AS DID_Est_Refund
+FROM
+   (
+   SELECT
+      *
+   FROM
+      DC4POD_Summ3a
+   UNION ALL
+   SELECT
+      *
+   FROM
+      DC4POD_Summ3b
+   ) A
+   LEFT JOIN
+   &Labeler_List_All B
+ON
+   A.Labeler = B.Labeler_ID
+ORDER BY
+   1,2,3
+;
+QUIT;
+
+************************************************************;
+* export to Excel ;
+
+%Export2XLS(&DC_for_POD_Summ5, &Out_XLS_File3, Data_for_POD_5);
+
+************************************************************;
+************************************************************;
+* 20160825: new summary ;
+
+TITLE2 "Added/Resolved/Updated/Corrected Disputes since DT20160122_All_POD20160401";
+
+PROC SQL STIMER;
+CREATE TABLE &DC_for_POD_Summ6 AS
+SELECT
+   Bill_Qtr,
+   CASE
+      WHEN
+         POD_Working_Field LIKE 'XPD%'
+      THEN
+         'PricingDispute'
+      WHEN
+         Dispute_Status IN
+            (
+            'Pending-Rejected',
+            )
+      THEN
+         'T-Rejected'
+      WHEN
+         Dispute_Status IN
+            (
+            'Pending-Accepted',
+            )
+      THEN
+         'T-Accepted'
+      WHEN
+         Dispute_Status IN
+            (
+            ' ',
+            'Pending',
+            'No Status',
+            'Pending-Upload'
+            )
+      THEN
+         'Pending'
+      WHEN
+         Dispute_Status IN
+            (
+            'DHA-Initiated',
+            'To be Accepted',
+            )
+      THEN
+         'DHA-Initiated'
+      ELSE
+         Dispute_Status
+   END AS Dispute_Status,
+   COUNT(Claim_Number) AS Records_Cnt FORMAT=COMMA9.0
+FROM
+   &DT_for_POD
+WHERE
+   DB_Upd_Date >= "20160401"
+   OR
+   TRRT_File_Date >= "20160603"
+   OR
+   HCDA_Process_DT >= "20160623"
+   OR
+   Dispute_Status IN
+      (
+      ' ',
+      'Pending',
+      'No Status',
+      'DHA-Initiated',
+      'Pending-Upload'
+      )
+GROUP BY
+   1,2
+ORDER BY
+   1,2
+;
+QUIT;
+
+PROC PRINT DATA=&DC_for_POD_Summ6 NOOBS;
+   BY Bill_Qtr;
+   SUM _NUMERIC_;
+RUN;
+
+TITLE2;
+
+* export to Excel ;
+
+%Export2XLS(&DC_for_POD_Summ6, &Out_XLS_File3, Data_for_POD_6);
